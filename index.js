@@ -10,6 +10,7 @@ const cookieParser = require("cookie-parser");
 const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer");
 
+
 const app = express();
 const PORT = process.env.PORT || 5001;
 
@@ -38,15 +39,19 @@ async function testDBConnection() {
 testDBConnection();
 
 // ✅ Middleware Setup
-app.use(express.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(cookieParser());
 app.use(
     cors({
         origin: "http://localhost:3000",
         credentials: true,
     })
 );
+app.use(express.json());
+
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cookieParser());
+const analyticsRoutes = require("./routes/analytics")(db);
+app.use("/analytics", analyticsRoutes);
+
 
 // ✅ Express Session (must come before CSRF middleware)
 app.use(
@@ -257,7 +262,7 @@ app.post("/block/:id", async (req, res) => {
             return res.status(404).json({ error: "User not found" });
         }
 
-        await db.query("UPDATE donor_registration SET status = 'Blocked' WHERE id = ?", [id]);
+        await db.query("DELETE FROM donor_registration WHERE id = ?", [id]);
         res.json({ message: "User blocked successfully" });
     } catch (err) {
         console.error("Error blocking user:", err.message);
@@ -266,40 +271,87 @@ app.post("/block/:id", async (req, res) => {
 });
 
 // ✅ Login Route (CSRF skipped)
+// app.post("/login", async (req, res) => {
+//     const { email, password } = req.body;
+//     console.log("Login attempt for email:", email);
+
+//     try {
+//         // Check Donor Table
+//         const [donorUsers] = await db.query("SELECT * FROM donor WHERE email = ?", [email]);
+//         if (donorUsers.length > 0) {
+//             const donor = donorUsers[0];
+//             const isMatch = await bcrypt.compare(password, donor.password_hash);
+//             console.log("Password Match for Donor:", isMatch);
+//             if (isMatch) {
+//                 return res.status(200).json({ role: "donor", message: "Login successful!" });
+
+//             }
+//         }
+
+//         // Check Receiver Table
+//         const [receiverUsers] = await db.query("SELECT * FROM receivers WHERE email = ?", [email]);
+//         if (receiverUsers.length > 0) {
+//             const receiver = receiverUsers[0];
+//             const isMatch = await bcrypt.compare(password, receiver.password_hash);
+//             console.log("Password Match for Receiver:", isMatch);
+//             if (isMatch) {
+//                 return res.status(200).json({ role: "receiver", message: "Login successful!" });
+//             }
+//         }
+
+//         console.log("Invalid login attempt for:", email);
+//         return res.status(401).json({ message: "Invalid email or password" });
+//     } catch (error) {
+//         console.error("Login Error:", error);
+//         res.status(500).json({ message: "Internal Server Error" });
+//     }
+// });
+
+
+const cookie = require('cookie');  // Make sure this module is imported to handle cookies
 app.post("/login", async (req, res) => {
-    const { email, password } = req.body;
-    console.log("Login attempt for email:", email);
+  const { email, password } = req.body;
+  console.log("Login attempt for email:", email);
 
-    try {
-        // Check Donor Table
-        const [donorUsers] = await db.query("SELECT * FROM donor WHERE email = ?", [email]);
-        if (donorUsers.length > 0) {
-            const donor = donorUsers[0];
-            const isMatch = await bcrypt.compare(password, donor.password_hash);
-            console.log("Password Match for Donor:", isMatch);
-            if (isMatch) {
-                return res.status(200).json({ role: "donor", message: "Login successful!" });
-            }
-        }
+  try {
+    // Donor login
+    const [donorUsers] = await db.query("SELECT * FROM donor WHERE email = ?", [email]);
+    if (donorUsers.length > 0) {
+      const donor = donorUsers[0];
+      const isMatch = await bcrypt.compare(password, donor.password_hash);
+      if (isMatch) {
+        const role = "donor"; // ✅ FIXED: define role
+        res.cookie("email", email, { httpOnly: true });
+        res.cookie("role", role, { httpOnly: true });
 
-        // Check Receiver Table
-        const [receiverUsers] = await db.query("SELECT * FROM receivers WHERE email = ?", [email]);
-        if (receiverUsers.length > 0) {
-            const receiver = receiverUsers[0];
-            const isMatch = await bcrypt.compare(password, receiver.password_hash);
-            console.log("Password Match for Receiver:", isMatch);
-            if (isMatch) {
-                return res.status(200).json({ role: "receiver", message: "Login successful!" });
-            }
-        }
-
-        console.log("Invalid login attempt for:", email);
-        return res.status(401).json({ message: "Invalid email or password" });
-    } catch (error) {
-        console.error("Login Error:", error);
-        res.status(500).json({ message: "Internal Server Error" });
+        console.log("✅ Donor Logged In:", email, "Role:", role);
+        return res.status(200).json({ role, message: "Login successful!" });
+      }
     }
+
+    // Receiver login
+    const [receiverUsers] = await db.query("SELECT * FROM receivers WHERE email = ?", [email]);
+    if (receiverUsers.length > 0) {
+      const receiver = receiverUsers[0];
+      const isMatch = await bcrypt.compare(password, receiver.password_hash);
+      if (isMatch) {
+        const role = "receiver"; // ✅ FIXED: define role
+        res.cookie("email", email, { httpOnly: true });
+        res.cookie("role", role, { httpOnly: true });
+
+        console.log("✅ Receiver Logged In:", email, "Role:", role);
+        return res.status(200).json({ role, message: "Login successful!" });
+      }
+    }
+
+    console.log("❌ Invalid login attempt for:", email);
+    return res.status(401).json({ message: "Invalid email or password" });
+  } catch (error) {
+    console.error("Login Error:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
 });
+
 
 // ✅ Nodemailer Transporter
 const transporter = nodemailer.createTransport({
@@ -406,56 +458,288 @@ console.log("Email variable:", req.body.email);
   
 
 // GET /my‑donations?email=foo@bar.com
-app.get("/api/my-donations", (req, res) => {
-  const email = req.cookies.userEmail?.trim();
-  console.log("Email from cookie:", email);
+app.get("/api/my-donations", async (req, res) => {
+  const email = req.cookies.email;
+  const role = req.cookies.role;
 
-  if (!email) {
-    return res.status(400).json({ message: "Email not found in cookies" });
+  console.log("📥 API hit with email:", email, "role:", role); // ✅ LOGGING
+
+  if (!email || !role || role !== "donor") {
+    console.warn("🚫 Access denied. Missing or invalid role/email.");
+    return res.status(403).json({ message: "Access denied" });
   }
 
-  const sql = "SELECT * FROM donations WHERE email = ?";
+  try {
+    const [donations] = await db.query(
+      `SELECT * FROM donations WHERE email = ? ORDER BY created_at DESC`,
+      [email]
+    );
 
-  db.query(sql, [email], (err, results) => {
-    if (err) {
-      console.error("Error fetching donations:", err);
-      return res.status(500).json({ message: "Internal Server Error" });
-    }
-    res.json(results);
-  });
+    console.log(`✅ Found ${donations.length} donations for ${email}`);
+    res.json(donations);
+  } catch (err) {
+    console.error("❌ DB Error fetching donations:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 app.get("/donations", async (req, res) => {
-    try {
-        const [results] = await db.query(`
-SELECT 
-  d.id AS donation_id,
-  d.food_category,
-  d.food_name,
-  d.quantity,
-  d.expiry_date,
-  d.preparation_date,
-  d.storage_instructions,
-  d.created_at,
-  donor.organization_name,
-  donor.phone,
-  donor.address,
-  donor.email
-FROM donations d
-JOIN donor ON d.donor_id = donor.id
-ORDER BY d.created_at DESC
+  try {
+    const [results] = await db.query(`
+      SELECT 
+        d.id AS donation_id,
+        d.food_category,
+        d.food_name,
+        d.quantity,
+        d.expiry_date,
+        d.preparation_date,
+        d.storage_instructions,
+        d.created_at,
+        donor.organization_name,
+        donor.phone,
+        donor.address,
+        donor.email,
+        d.status
+      FROM donations d
+      JOIN donor ON d.donor_id = donor.id
+      WHERE d.status = 'Pending'
+      ORDER BY d.created_at DESC
+    `);
 
-        `);
-
-        res.json(results);
-    } catch (err) {
-        console.error("Error fetching donations:", err);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching donations:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
 
 
+// Accept donation by recipient
+// Accept donation by receiver (dynamic by email)
+app.post("/donations/accept/:id", async (req, res) => {
+  const donationId = req.params.id;
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+
+  try {
+    const [receiverRows] = await db.query(
+      `SELECT id FROM receivers WHERE email = ?`,
+      [email]
+    );
+
+    if (receiverRows.length === 0) {
+      return res.status(404).json({ error: "Receiver not found" });
+    }
+
+    const receiverId = receiverRows[0].id;
+
+    await db.query(
+      `UPDATE donations 
+       SET status = 'Accepted', 
+           accepted_by = ?, 
+           accepted_at = NOW() 
+       WHERE id = ?`,
+      [receiverId, donationId]
+    );
+    
+    res.json({ message: "Donation accepted successfully" });
+  } catch (err) {
+    console.error("Error accepting donation:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
+app.get("/donations/accepted", async (req, res) => {
+  try {
+      const [results] = await db.query(`
+          SELECT 
+          d.id AS donation_id,
+          d.food_name,
+          d.food_category,
+          d.quantity,
+          d.expiry_date,
+          d.status,
+          d.accepted_at,
+          donor.organization_name AS donor_name,
+          r.organization_name AS receiver_name
+          FROM donations d
+
+          JOIN donor ON d.donor_id = donor.id
+          LEFT JOIN receivers r ON d.accepted_by = r.id
+          WHERE d.status = 'Accepted'
+          ORDER BY d.created_at DESC
+      `);
+      res.json(results);
+  } catch (err) {
+      console.error("Error fetching accepted donations:", err);
+      res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Get accepted donations for a specific receiver (history)
+app.get("/donations/receiver/history", async (req, res) => {
+  const email = req.query.email;  // Fetch the email from the query parameter
+
+  if (!email) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+
+  try {
+    // Update the SQL query to join donations with receivers table and filter by receiver email
+    const [results] = await db.query(`
+      SELECT 
+        d.id AS donation_id,
+        d.food_name,
+        d.food_category,
+        d.quantity,
+        d.expiry_date,
+        d.status,
+        d.accepted_at,
+        donor.organization_name AS donor_name,
+        r.organization_name AS receiver_name
+      FROM donations d
+      JOIN donor ON d.donor_id = donor.id
+      JOIN receivers r ON d.accepted_by = r.id  -- Ensure you're joining with the receivers table
+      WHERE d.status = 'Accepted' AND r.email = ?  -- Match by receiver's email
+      ORDER BY d.created_at DESC
+    `, [email]);
+
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching donation history:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Get donation history for a specific donor
+app.get("/donations/donor/history", async (req, res) => {
+  const email = req.query.email;  // Fetch the email from the query parameter
+
+  if (!email) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+
+  try {
+    const [results] = await db.query(`
+      SELECT 
+        d.id AS donation_id,
+        d.food_name,
+        d.food_category,
+        d.quantity,
+        d.expiry_date,
+        d.status,
+        donor.organization_name AS donor_name,
+        r.organization_name AS receiver_name
+      FROM donations d
+      JOIN donor ON d.donor_id = donor.id
+      LEFT JOIN receivers r ON d.accepted_by = r.id  -- Join receivers table to get receiver name
+      WHERE d.donor_email = ?  -- Match by donor's email
+      ORDER BY d.created_at DESC
+    `, [email]);
+
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching donor donation history:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Mark a donation as completed
+app.post("/donations/mark-completed/:id", async (req, res) => {
+  const donationId = req.params.id;
+
+  try {
+    await db.query(
+      `UPDATE donations SET status = 'Completed' WHERE id = ?`,
+      [donationId]
+    );
+
+    res.json({ message: "Donation marked as completed" });
+  } catch (err) {
+    console.error("Error marking donation as completed:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
+
+
+
+
+app.get("/analytics/category-wise-donations", async (req, res) => {
+  try {
+    const [results] = await db.query(`
+      SELECT 
+        food_category, 
+        COUNT(id) AS donations_count 
+      FROM donations 
+      WHERE status = 'Accepted'
+      GROUP BY food_category
+    `);
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching category-wise donations:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+app.get("/analytics/quantity-over-time", async (req, res) => {
+  try {
+    const [results] = await db.query(`
+      SELECT 
+        DATE(created_at) AS date, 
+        SUM(quantity) AS total_quantity 
+      FROM donations 
+      WHERE status = 'Accepted'
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC
+    `);
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching quantity over time:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+app.get("/analytics/status-comparison", async (req, res) => {
+  try {
+    const [results] = await db.query(`
+      SELECT 
+        DATE(created_at) AS date, 
+        COUNT(CASE WHEN status = 'Accepted' THEN 1 END) AS accepted,
+        COUNT(CASE WHEN status = 'Pending' THEN 1 END) AS pending
+      FROM donations
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC
+    `);
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching status comparison:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+app.get("/analytics/top-donors", async (req, res) => {
+  try {
+    const [results] = await db.query(`
+      SELECT 
+        donor.organization_name, 
+        SUM(quantity) AS total_donated
+      FROM donations d
+      JOIN donor ON d.donor_id = donor.id
+      WHERE d.status = 'Accepted'
+      GROUP BY donor.organization_name
+      ORDER BY total_donated DESC
+      LIMIT 10
+    `);
+    res.json(results);
+  } catch (err) {
+    console.error("Error fetching top donors:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
 
 app.listen(PORT, () => {
