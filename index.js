@@ -253,6 +253,7 @@ app.post("/approve/:id", async (req, res) => {
     }
 });
 
+
 // ✅ Block user (mark as blocked)
 app.post("/block/:id", async (req, res) => {
     try {
@@ -270,42 +271,7 @@ app.post("/block/:id", async (req, res) => {
     }
 });
 
-// ✅ Login Route (CSRF skipped)
-// app.post("/login", async (req, res) => {
-//     const { email, password } = req.body;
-//     console.log("Login attempt for email:", email);
 
-//     try {
-//         // Check Donor Table
-//         const [donorUsers] = await db.query("SELECT * FROM donor WHERE email = ?", [email]);
-//         if (donorUsers.length > 0) {
-//             const donor = donorUsers[0];
-//             const isMatch = await bcrypt.compare(password, donor.password_hash);
-//             console.log("Password Match for Donor:", isMatch);
-//             if (isMatch) {
-//                 return res.status(200).json({ role: "donor", message: "Login successful!" });
-
-//             }
-//         }
-
-//         // Check Receiver Table
-//         const [receiverUsers] = await db.query("SELECT * FROM receivers WHERE email = ?", [email]);
-//         if (receiverUsers.length > 0) {
-//             const receiver = receiverUsers[0];
-//             const isMatch = await bcrypt.compare(password, receiver.password_hash);
-//             console.log("Password Match for Receiver:", isMatch);
-//             if (isMatch) {
-//                 return res.status(200).json({ role: "receiver", message: "Login successful!" });
-//             }
-//         }
-
-//         console.log("Invalid login attempt for:", email);
-//         return res.status(401).json({ message: "Invalid email or password" });
-//     } catch (error) {
-//         console.error("Login Error:", error);
-//         res.status(500).json({ message: "Internal Server Error" });
-//     }
-// });
 
 
 const cookie = require('cookie');  // Make sure this module is imported to handle cookies
@@ -537,6 +503,20 @@ app.post("/donations/accept/:id", async (req, res) => {
 
     const receiverId = receiverRows[0].id;
 
+    // Check if donation is already accepted
+    const [donationCheck] = await db.query(
+      `SELECT status FROM donations WHERE id = ?`,
+      [donationId]
+    );
+
+    if (donationCheck.length === 0) {
+      return res.status(404).json({ error: "Donation not found" });
+    }
+
+    if (donationCheck[0].status !== "Pending") {
+      return res.status(400).json({ error: "Donation is already Accepted." });
+    }
+
     await db.query(
       `UPDATE donations 
        SET status = 'Accepted', 
@@ -552,7 +532,6 @@ app.post("/donations/accept/:id", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 
 app.get("/donations/accepted", async (req, res) => {
   try {
@@ -650,14 +629,21 @@ app.get("/donations/donor/history", async (req, res) => {
 });
 
 // Mark a donation as completed
-app.post("/donations/mark-completed/:id", async (req, res) => {
+// PUT /api/donations/:id/complete
+// Mark a donation as completed
+// Backend: Mark donation as completed
+app.post("/api/mark-completed/:id", async (req, res) => {
   const donationId = req.params.id;
 
   try {
-    await db.query(
-      `UPDATE donations SET status = 'Completed' WHERE id = ?`,
+    const [result] = await db.query(
+      `UPDATE donations SET status = 'completed' WHERE id = ?`,
       [donationId]
     );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Donation not found." });
+    }
 
     res.json({ message: "Donation marked as completed" });
   } catch (err) {
@@ -665,7 +651,6 @@ app.post("/donations/mark-completed/:id", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 
 
 
@@ -740,7 +725,99 @@ app.get("/analytics/top-donors", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+// GET: Fetch like count and user like status
+app.get("/api/likes", async (req, res) => {
+  const userEmail = req.query.email;
+  if (!userEmail) return res.status(400).json({ error: "Email is required" });
 
+  try {
+    // Fetch total likes
+    const [likeRows] = await db.query("SELECT total_likes FROM likes WHERE id = 1");
+
+    // Check if the user has already liked
+    const [userRows] = await db.query("SELECT * FROM user_likes WHERE email = ?", [userEmail]);
+
+    res.json({
+      totalLikes: likeRows[0]?.total_likes || 0,
+      userHasLiked: userRows.length > 0,
+    });
+  } catch (err) {
+    console.error("GET /api/likes error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST: Handle like action
+app.post("/api/likes", async (req, res) => {
+  const userEmail = req.body.email;
+  if (!userEmail) return res.status(400).json({ error: "Email is required" });
+
+  try {
+    // Check if the user has already liked
+    const [userExists] = await db.query("SELECT * FROM user_likes WHERE email = ?", [userEmail]);
+    if (userExists.length > 0) {
+      return res.status(400).json({ message: "User already liked" });
+    }
+
+    // Add user to 'user_likes' table and increase the total like count
+    await db.query("INSERT INTO user_likes (email) VALUES (?)", [userEmail]);
+    await db.query("UPDATE likes SET total_likes = total_likes + 1 WHERE id = 1");
+
+    // Fetch the updated like count
+    const [updatedLikes] = await db.query("SELECT total_likes FROM likes WHERE id = 1");
+
+    res.json({
+      message: "Liked successfully",
+      totalLikes: updatedLikes[0].total_likes,
+    });
+  } catch (err) {
+    console.error("POST /api/likes error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+
+
+// Middleware for CSRF protection
+app.use(csrfProtection);
+
+// Route to get the CSRF token
+app.get("/api/csrf-token", (req, res) => {
+  res.json({ csrfToken: req.csrfToken() });
+});
+
+
+// Feedback submission route
+app.post("/api/feedback", async (req, res) => {
+  try {
+    const { name, feedback } = req.body;
+
+    if (!name || !feedback) {
+      return res.status(400).json({ error: "Name and feedback are required." });
+    }
+
+    // ✅ Corrected table name: `feedbacks`
+    const query = "INSERT INTO feedbacks (name, feedback) VALUES (?, ?)";
+    await db.query(query, [name, feedback]);
+
+    res.status(201).json({ message: "Feedback submitted successfully!" });
+  } catch (error) {
+    console.error("Error inserting feedback:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}); 
+
+// feedback list API to match frontend
+app.get('/api/feedbacks', async (req, res) => {
+  try {
+    const [results] = await db.query('SELECT * FROM feedbacks ORDER BY created_at DESC');
+    res.json(results);
+  } catch (err) {
+    console.error('Query error:', err);
+    res.status(500).json({ message: 'Database error' });
+  }
+});
 
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
