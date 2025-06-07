@@ -51,6 +51,8 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cookieParser());
 const analyticsRoutes = require("./routes/analytics")(db);
 app.use("/analytics", analyticsRoutes);
+const ratingModelRoutes = require("./routes/ratingModel")(db);
+app.use("/ratingmodel", ratingModelRoutes);
 
 
 // ✅ Express Session (must come before CSRF middleware)
@@ -448,7 +450,6 @@ app.get("/api/my-donations", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-
 app.get("/donations", async (req, res) => {
   try {
     const [results] = await db.query(`
@@ -461,6 +462,7 @@ app.get("/donations", async (req, res) => {
         d.preparation_date,
         d.storage_instructions,
         d.created_at,
+        donor.id AS donorId,            -- Add this line to send donor's id
         donor.organization_name,
         donor.phone,
         donor.address,
@@ -478,6 +480,7 @@ app.get("/donations", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
 
 
 
@@ -560,31 +563,66 @@ app.get("/donations/accepted", async (req, res) => {
   }
 });
 
-// Get accepted donations for a specific receiver (history)
-app.get("/donations/receiver/history", async (req, res) => {
-  const email = req.query.email;  // Fetch the email from the query parameter
+// // Get accepted donations for a specific receiver (history)
+// app.get("/donations/receiver/history", async (req, res) => {
+//   const email = req.query.email;  // Fetch the email from the query parameter
 
-  if (!email) {
-    return res.status(400).json({ error: "Email is required" });
-  }
+//   if (!email) {
+//     return res.status(400).json({ error: "Email is required" });
+//   }
+
+//   try {
+//     // Update the SQL query to join donations with receivers table and filter by receiver email
+//     const [results] = await db.query(`
+//       SELECT 
+//         d.id AS donation_id,
+//         d.food_name,
+//         d.food_category,
+//         d.quantity,
+//         d.expiry_date,
+//         d.status,
+//         d.accepted_at,
+//         donor.organization_name AS donor_name,
+//         r.organization_name AS receiver_name
+//       FROM donations d
+//       JOIN donor ON d.donor_id = donor.id
+//       JOIN receivers r ON d.accepted_by = r.id  -- Ensure you're joining with the receivers table
+//       WHERE d.status = 'Accepted' AND r.email = ?  -- Match by receiver's email
+//       ORDER BY d.created_at DESC
+//     `, [email]);
+
+//     res.json(results);
+//   } catch (err) {
+//     console.error("Error fetching donation history:", err);
+//     res.status(500).json({ error: "Internal Server Error" });
+//   }
+// });
+
+
+
+app.get("/donations/receiver/history", async (req, res) => {
+  const email = req.query.email;
+  if (!email) return res.status(400).json({ error: "Email is required" });
 
   try {
-    // Update the SQL query to join donations with receivers table and filter by receiver email
     const [results] = await db.query(`
       SELECT 
         d.id AS donation_id,
+        d.donor_id,
         d.food_name,
         d.food_category,
         d.quantity,
-        d.expiry_date,
         d.status,
         d.accepted_at,
         donor.organization_name AS donor_name,
+        donor.phone AS donor_phone,
+        donor.address AS donor_address,
         r.organization_name AS receiver_name
       FROM donations d
       JOIN donor ON d.donor_id = donor.id
-      JOIN receivers r ON d.accepted_by = r.id  -- Ensure you're joining with the receivers table
-      WHERE d.status = 'Accepted' AND r.email = ?  -- Match by receiver's email
+      JOIN receivers r ON d.accepted_by = r.id
+      WHERE d.status = 'Accepted'
+        AND r.email = ?
       ORDER BY d.created_at DESC
     `, [email]);
 
@@ -594,6 +632,7 @@ app.get("/donations/receiver/history", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
 
 // Get donation history for a specific donor
 app.get("/donations/donor/history", async (req, res) => {
